@@ -1,4 +1,7 @@
 import Phaser from 'phaser';
+import { Bot } from '../entities/Bot.js';
+import { Door } from '../entities/Door.js';
+import { Key } from '../entities/Key.js';
 import { Monster } from '../entities/Monster.js';
 import { worldBounds, WORLD_HEIGHT, WORLD_WIDTH } from '../data/worldConfig.js';
 import { Minimap } from '../ui/Minimap.js';
@@ -11,12 +14,6 @@ export class GameScene extends Phaser.Scene {
     super('GameScene');
   }
 
-  preload() {
-    this.load.audio('ambient-sound', '/Sample/ambient.wav');
-    this.load.audio('space-sample', '/Sample/space.wav');
-    this.load.audio('shift-sample', '/Sample/shift.wav');
-  }
-
   create() {
     this.cameras.main.setBackgroundColor('#020308');
     this.cameras.main.setBounds(worldBounds.x, worldBounds.y, worldBounds.width, worldBounds.height);
@@ -24,10 +21,12 @@ export class GameScene extends Phaser.Scene {
     this.createMapBackground();
 
     this.monster = new Monster(this, WORLD_WIDTH / 2, WORLD_HEIGHT / 2, worldBounds);
+    this.bot = new Bot(this, WORLD_WIDTH / 2 + 380, WORLD_HEIGHT / 2 - 260, worldBounds);
+    this.createObjectives();
     this.minimap = new Minimap(this, worldBounds);
-    this.ambientSound = new AmbientSound(this);
-    this.spaceSample = new SpaceSample(this);
-    this.shiftSample = new ShiftSample(this);
+    this.ambientSound = new AmbientSound();
+    this.spaceSample = new SpaceSample();
+    this.shiftSample = new ShiftSample();
     this.shiftKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
     this.spaceKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     this.cameras.main.startFollow(this.monster.followTarget, true, 0.08, 0.08);
@@ -36,22 +35,35 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time, delta) {
-    const pointer = this.input.activePointer;
-    const target = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    try {
+      const pointer = this.input.activePointer;
+      const target = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
 
-    if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
-      this.spaceSample.play();
+      if (Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
+        this.spaceSample.play();
+      }
+
+      if (Phaser.Input.Keyboard.JustUp(this.spaceKey)) {
+        this.spaceSample.fadeOutAndStop();
+      }
+
+      this.monster.setFrozen(this.spaceKey.isDown);
+      this.monster.setSprinting(this.shiftKey.isDown);
+      this.shiftSample.setActive(this.shiftKey.isDown && !this.spaceKey.isDown);
+      this.monster.update(delta / 16.6667, target.x, target.y);
+      this.bot.update(delta / 16.6667);
+      this.updateObjectives();
+      this.minimap.update(this.monster, this.bot, this.key, this.door);
+    } catch (error) {
+      this.showRuntimeError(error);
+      this.scene.pause();
     }
+  }
 
-    if (Phaser.Input.Keyboard.JustUp(this.spaceKey)) {
-      this.spaceSample.fadeOutAndStop();
-    }
+  showRuntimeError(error) {
+    const message = error && error.stack ? error.stack : String(error);
 
-    this.monster.setFrozen(this.spaceKey.isDown);
-    this.monster.setSprinting(this.shiftKey.isDown);
-    this.shiftSample.setActive(this.shiftKey.isDown && !this.spaceKey.isDown);
-    this.monster.update(delta / 16.6667, target.x, target.y);
-    this.minimap.update(this.monster);
+    document.body.innerHTML = `<pre style="margin:0;padding:24px;color:#f3f5ee;background:#020308;white-space:pre-wrap;font:14px/1.5 Consolas,monospace;">Game loop error:\n${message}</pre>`;
   }
 
   createMapBackground() {
@@ -70,5 +82,32 @@ export class GameScene extends Phaser.Scene {
 
     background.lineStyle(2, 0x56606b, 0.28);
     background.strokeRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+  }
+
+  createObjectives() {
+    const margin = 420;
+    const keyX = Phaser.Math.Between(margin, WORLD_WIDTH - margin);
+    const keyY = Phaser.Math.Between(margin, WORLD_HEIGHT - margin);
+    const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    const distance = Phaser.Math.Between(120, 220);
+    const doorX = Phaser.Math.Clamp(keyX + Math.cos(angle) * distance, margin, WORLD_WIDTH - margin);
+    const doorY = Phaser.Math.Clamp(keyY + Math.sin(angle) * distance, margin, WORLD_HEIGHT - margin);
+
+    this.key = new Key(this, keyX, keyY);
+    this.door = new Door(this, doorX, doorY);
+    this.bot.setObjectiveTarget(this.key.x, this.key.y);
+  }
+
+  updateObjectives() {
+    if (!this.bot.hasKey && !this.key.isCollected && Phaser.Math.Distance.Between(this.bot.x, this.bot.y, this.key.x, this.key.y) < 44) {
+      this.key.collect();
+      this.bot.hasKey = true;
+      this.bot.setObjectiveTarget(this.door.x, this.door.y);
+    }
+
+    if (this.bot.hasKey && !this.door.isOpen && Phaser.Math.Distance.Between(this.bot.x, this.bot.y, this.door.x, this.door.y) < 58) {
+      this.door.open();
+      this.bot.clearObjectiveTarget();
+    }
   }
 }

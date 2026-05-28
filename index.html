@@ -6,8 +6,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>douseeme-phaser</title>
   </head>
-  <body>
+  <body style="margin: 0; background: #020308; overflow: hidden;">
     <div id="app"></div>
+    <script>
+      window.addEventListener('error', function (event) {
+        document.body.innerHTML =
+          '<pre style="margin:0;padding:24px;color:#f3f5ee;background:#020308;white-space:pre-wrap;font:14px/1.5 Consolas,monospace;">' +
+          'Runtime error:\n' +
+          event.message +
+          '\n\n' +
+          (event.filename || '') +
+          ':' +
+          (event.lineno || '') +
+          ':' +
+          (event.colno || '') +
+          '</pre>';
+      });
+      window.addEventListener('unhandledrejection', function (event) {
+        document.body.innerHTML =
+          '<pre style="margin:0;padding:24px;color:#f3f5ee;background:#020308;white-space:pre-wrap;font:14px/1.5 Consolas,monospace;">Unhandled promise rejection:\n' +
+          String(event.reason) +
+          '</pre>';
+      });
+    </script>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

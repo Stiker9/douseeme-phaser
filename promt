@@ -1,0 +1,6 @@
+git add .; git commit -m "save progress"; git push
+npm run dev
+git log --oneline
+git reset --hard COMMIT_ID
+git reset --hard HEAD~1 - на один шаг назад
+git reset --hard origin/main - последняя версия git

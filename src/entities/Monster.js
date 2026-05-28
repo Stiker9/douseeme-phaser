@@ -2,6 +2,12 @@ import Phaser from 'phaser';
 import { LegSystem } from './LimbSystem.js';
 import { Segment, normalizeRelativeAngle } from './Segment.js';
 
+function smoothStep(value) {
+  const x = Phaser.Math.Clamp(value, 0, 1);
+
+  return x * x * (3 - 2 * x);
+}
+
 export class Monster {
   constructor(scene, x, y, bounds = null) {
     this.scene = scene;
@@ -22,8 +28,13 @@ export class Monster {
     this.children = [];
     this.systems = [];
     this.spineSegments = [];
+    this.neckSegments = [];
     this.tailSegments = [];
     this.time = 0;
+    this.headLookOffset = 0;
+    this.frozenNeckAngle = 0;
+    this.neckTransition = 0;
+    this.visualHead = { x, y, angle: 0 };
     this.moveSpeedMultiplier = 2;
     this.sprintMultiplier = 10;
     this.isSprinting = false;
@@ -44,6 +55,7 @@ export class Monster {
     for (let i = 0; i < 6; i += 1) {
       spine = this.addSegment(spine, size * 4, 0, Math.PI * 0.66, 1.1);
       this.spineSegments.push(spine);
+      this.neckSegments.push(spine);
       this.addRibs(spine, size, 3, 0.1, size * 3);
     }
 
@@ -97,7 +109,10 @@ export class Monster {
   }
 
   update(stepScale, targetX, targetY) {
-    this.time += this.scene.game.loop.delta;
+    const delta = this.scene.game.loop.delta;
+
+    this.time += delta;
+    this.updateNeckTransition(delta);
     this.follow(targetX, targetY, Math.min(stepScale, 2.5));
     this.draw();
     this.followTarget.setPosition(this.x, this.y);
@@ -108,16 +123,29 @@ export class Monster {
   }
 
   setFrozen(isFrozen) {
+    if (isFrozen && !this.isFrozen) {
+      this.initializeFrozenNeckPose();
+    }
+
     this.isFrozen = isFrozen;
+  }
+
+  updateNeckTransition(delta) {
+    const direction = this.isFrozen ? 1 : -1;
+    const speed = delta / 620;
+
+    this.neckTransition = Phaser.Math.Clamp(this.neckTransition + direction * speed, 0, 1);
   }
 
   follow(targetX, targetY, stepScale) {
     if (this.isFrozen) {
       this.fSpeed = 0;
       this.rSpeed = 0;
-      this.animateFrozenTail();
+      this.animateFrozenHeadAndNeck(targetX, targetY);
       return;
     }
+
+    this.headLookOffset *= 0.82;
 
     const dist = Math.hypot(this.x - targetX, this.y - targetY);
     const angle = Math.atan2(targetY - this.y, targetX - this.x);
@@ -160,54 +188,200 @@ export class Monster {
   draw() {
     this.graphics.clear();
     this.graphics.lineStyle(1, 0xf3f5ee, 0.92);
-    this.drawHead();
-    this.children.forEach((child) => this.drawSegmentTree(child));
+
+    if (this.neckTransition > 0) {
+      this.drawFrozenBodyFromNeckBase();
+      this.drawFrozenTailOverlay();
+      this.drawFrozenNeckOverlay();
+    }
+
+    if (this.neckTransition < 1) {
+      this.drawHead();
+      this.children.forEach((child) => this.drawSegmentTree(child, 1 - this.neckTransition));
+    }
   }
 
   drawHead() {
-    const radius = 5;
-    const start = Math.PI / 4 + this.absAngle;
-    const end = (Math.PI * 7) / 4 + this.absAngle;
+    this.drawHeadShape(this.x, this.y, this.absAngle + this.headLookOffset);
+  }
 
+  drawHeadShape(x, y, angle, alpha = 1) {
+    const radius = 5;
+    const start = Math.PI / 4 + angle;
+    const end = (Math.PI * 7) / 4 + angle;
+
+    this.graphics.lineStyle(1, 0xf3f5ee, 0.92 * alpha);
     this.graphics.beginPath();
-    this.graphics.arc(this.x, this.y, radius, start, end, false);
+    this.graphics.arc(x, y, radius, start, end, false);
     this.graphics.lineTo(
-      this.x + radius * Math.cos(this.absAngle) * Math.SQRT2,
-      this.y + radius * Math.sin(this.absAngle) * Math.SQRT2,
+      x + radius * Math.cos(angle) * Math.SQRT2,
+      y + radius * Math.sin(angle) * Math.SQRT2,
     );
-    this.graphics.lineTo(this.x + radius * Math.cos(start), this.y + radius * Math.sin(start));
+    this.graphics.lineTo(x + radius * Math.cos(start), y + radius * Math.sin(start));
     this.graphics.strokePath();
   }
 
-  drawSegmentTree(segment) {
+  drawSegmentTree(segment, alphaMultiplier = 1) {
     const depthAlpha = Phaser.Math.Clamp(1 - this.distanceFromHead(segment) / 580, 0.28, 0.95);
 
-    this.graphics.lineStyle(1, 0xf3f5ee, depthAlpha);
+    this.graphics.lineStyle(1, 0xf3f5ee, depthAlpha * alphaMultiplier);
     this.graphics.lineBetween(segment.parent.x, segment.parent.y, segment.x, segment.y);
 
-    segment.children.forEach((child) => this.drawSegmentTree(child));
+    segment.children.forEach((child) => this.drawSegmentTree(child, alphaMultiplier));
   }
 
   distanceFromHead(segment) {
     return Math.hypot(segment.x - this.x, segment.y - this.y);
   }
 
-  animateFrozenTail() {
+  animateFrozenHeadAndNeck(targetX, targetY) {
+    const base = this.getNeckBase();
+
+    if (!base) {
+      return;
+    }
+
+    const targetAngle = Math.atan2(targetY - base.y, targetX - base.x);
+    const desiredOffset = Phaser.Math.Clamp(normalizeRelativeAngle(targetAngle - this.absAngle), -1.45, 1.45);
+    const breathingOffset = Math.sin(this.time * 0.0042) * 0.08 + Math.sin(this.time * 0.0071 + 1.6) * 0.04;
+
+    this.headLookOffset += (desiredOffset + breathingOffset - this.headLookOffset) * 0.09;
+    this.frozenNeckAngle = Phaser.Math.Angle.RotateTo(
+      this.frozenNeckAngle,
+      this.absAngle + this.headLookOffset,
+      0.032,
+    );
+  }
+
+  initializeFrozenNeckPose() {
+    const base = this.getNeckBase();
+
+    this.frozenNeckAngle = base ? Math.atan2(this.y - base.y, this.x - base.x) : this.absAngle;
+    this.headLookOffset = normalizeRelativeAngle(this.frozenNeckAngle - this.absAngle);
+    this.visualHead.x = this.x;
+    this.visualHead.y = this.y;
+    this.visualHead.angle = this.absAngle;
+  }
+
+  getNeckBase() {
+    return this.neckSegments[this.neckSegments.length - 1] || null;
+  }
+
+  drawFrozenBodyFromNeckBase() {
+    const base = this.getNeckBase();
+
+    if (!base) {
+      this.children.forEach((child) => this.drawSegmentTree(child));
+      return;
+    }
+
+    base.children.forEach((child) => {
+      if (!this.neckSegments.includes(child)) {
+        this.drawSegmentTree(child, this.neckTransition);
+      }
+    });
+  }
+
+  drawFrozenNeckOverlay() {
+    const base = this.getNeckBase();
+
+    if (!base) {
+      return;
+    }
+
+    let x = base.x;
+    let y = base.y;
+    const count = this.neckSegments.length;
+    const transitionAlpha = smoothStep(this.neckTransition);
+
+    for (let i = count - 1; i >= 0; i -= 1) {
+      const localIndex = count - 1 - i;
+      const blend = i / Math.max(1, count - 1);
+      const curve = Math.sin((localIndex / Math.max(1, count - 1)) * Math.PI) * this.headLookOffset * 0.24;
+      const wave = Math.sin(this.time * 0.006 + localIndex * 0.9) * (1 - blend) * 0.055;
+      const angle = this.frozenNeckAngle + curve + wave;
+      const size = this.neckSegments[i].size;
+      const nextX = x + Math.cos(angle) * size;
+      const nextY = y + Math.sin(angle) * size;
+
+      this.graphics.lineStyle(1, 0xf3f5ee, (0.55 + (1 - blend) * 0.3) * transitionAlpha);
+      this.graphics.lineBetween(x, y, nextX, nextY);
+
+      if (localIndex < count - 2) {
+        this.drawFrozenNeckRibs(nextX, nextY, angle, blend, localIndex, transitionAlpha);
+      }
+
+      x = nextX;
+      y = nextY;
+    }
+
+    this.visualHead.x = x;
+    this.visualHead.y = y;
+    this.visualHead.angle = this.frozenNeckAngle;
+    this.graphics.lineStyle(1, 0xf3f5ee, 0.88 * transitionAlpha);
+    this.drawHeadShape(this.visualHead.x, this.visualHead.y, this.visualHead.angle, transitionAlpha);
+  }
+
+  drawFrozenNeckRibs(x, y, angle, blend, localIndex, transitionAlpha) {
+    const alpha = (0.13 + (1 - blend) * 0.22) * transitionAlpha;
+    const ribSegmentLength = 7.4 - blend * 1.1;
+
+    for (let side = -1; side <= 1; side += 2) {
+      let jointX = x;
+      let jointY = y;
+      const baseAngle = angle + side * Math.PI / 2;
+      const breathing = Math.sin(this.time * 0.006 + localIndex * 0.75 + side) * 0.08;
+
+      this.graphics.lineStyle(1, 0xf3f5ee, alpha);
+
+      for (let joint = 0; joint < 4; joint += 1) {
+        const curl = side * (joint * 0.13 + blend * 0.08) + breathing;
+        const jointAngle = baseAngle + curl;
+        const length = ribSegmentLength * (1 - joint * 0.08);
+        const nextX = jointX + Math.cos(jointAngle) * length;
+        const nextY = jointY + Math.sin(jointAngle) * length;
+
+        this.graphics.lineBetween(jointX, jointY, nextX, nextY);
+        jointX = nextX;
+        jointY = nextY;
+      }
+
+      if (localIndex % 2 === 0) {
+        const fingerAngle = baseAngle + side * 0.65 + breathing;
+        this.graphics.lineStyle(1, 0xf3f5ee, alpha * 0.74);
+        this.graphics.lineBetween(
+          jointX,
+          jointY,
+          jointX + Math.cos(fingerAngle) * 4.2,
+          jointY + Math.sin(fingerAngle) * 4.2,
+        );
+      }
+    }
+  }
+
+  drawFrozenTailOverlay() {
     const animatedCount = Math.max(1, Math.floor(this.tailSegments.length * 0.3));
     const startIndex = this.tailSegments.length - animatedCount;
-    const firstAnimated = this.tailSegments[startIndex];
 
     for (let i = startIndex; i < this.tailSegments.length; i += 1) {
       const segment = this.tailSegments[i];
       const localIndex = i - startIndex;
       const normalized = localIndex / Math.max(1, animatedCount - 1);
+      const parent = segment.parent;
+      const angle = Math.atan2(segment.y - parent.y, segment.x - parent.x);
       const wave = Math.sin(this.time * 0.0025 + localIndex * 0.55);
-      const amplitude = 0.015 + normalized * 0.045;
+      const offset = wave * normalized * 3.2;
+      const normalX = Math.cos(angle + Math.PI / 2);
+      const normalY = Math.sin(angle + Math.PI / 2);
 
-      segment.relAngle = segment.defAngle + wave * amplitude;
+      this.graphics.lineStyle(1, 0xf3f5ee, 0.18 + normalized * 0.22);
+      this.graphics.lineBetween(
+        parent.x + normalX * offset * 0.45,
+        parent.y + normalY * offset * 0.45,
+        segment.x + normalX * offset,
+        segment.y + normalY * offset,
+      );
     }
-
-    firstAnimated.updateRelative(true, false);
   }
 
   clampToBounds() {
